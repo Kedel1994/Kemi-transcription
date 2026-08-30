@@ -190,7 +190,7 @@ h1,h2,h3{font-family:'Space Grotesk',sans-serif;}
   <div class="logo">✦</div>
   <div>
     <div class="header-title">Kemi Transcription</div>
-    <div class="header-sub">Gemini 2.5 Pro · YouTube · Google Drive · Texte</div>
+    <div class="header-sub">Gemini 3.7 Flash · 3.5 Transcribe · YouTube · Drive</div>
   </div>
   <div class="header-right">
     <span class="badge-api" id="apiBadge">Non configuré</span>
@@ -469,8 +469,9 @@ var glossaryEntries = [
   {id:'g2',source:'LLM',target:'Grand Modèle de Langage (LLM)'},
   {id:'g3',source:'Diarization',target:'Diarisation des locuteurs'}
 ];
-var GEMINI_MODEL = 'gemini-2.5-pro';
-var GENERATE_API = 'https://generativelanguage.googleapis.com/v1beta/models/'+GEMINI_MODEL+':generateContent';
+var MODEL_TRANSCRIBE = 'gemini-3.5-transcribe';
+var MODEL_ANALYZE = 'gemini-3.7-flash';
+var GENERATE_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
 // ===== INIT =====
 function init(){
@@ -683,7 +684,7 @@ async function callGeminiWithText(text, agentConfig, srcLang, tgtLang){
 
 // ===== CALL GEMINI API =====
 async function callGeminiAPI(parts){
-  addLog('🧠 Gemini 2.5 Pro en cours d\'analyse...','info');
+  addLog('🧠 '+MODEL_ANALYZE+' en cours d\'analyse...','info');
   setProgress(60,'Analyse en cours...');
 
   var body = {
@@ -691,7 +692,7 @@ async function callGeminiAPI(parts){
     generationConfig:{responseMimeType:'application/json'}
   };
 
-  var resp = await fetch(GENERATE_API+'?key='+apiKey, {
+  var resp = await fetch(GENERATE_API_BASE+MODEL_ANALYZE+':generateContent?key='+apiKey, {
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify(body)
@@ -781,7 +782,7 @@ function renderResults(parsed){
   var wc=((parsed.translation||parsed.transcription||'')).split(/\s+/).filter(Boolean).length;
   mr.innerHTML+='<span class="meta-pill">📝 '+wc+' mots</span>';
   if(parsed.segments&&parsed.segments.length) mr.innerHTML+='<span class="meta-pill">⏱ '+parsed.segments.length+' segments</span>';
-  mr.innerHTML+='<span class="meta-pill accent">✦ Gemini 2.5 Pro</span>';
+  mr.innerHTML+='<span class="meta-pill accent">✦ Gemini 3.7 Flash</span>';
 
   showEl('res-transcription',!!(parsed.transcription&&currentMode!=='translate'));
   if(parsed.transcription&&currentMode!=='translate') document.getElementById('res-transcription-text').textContent=parsed.transcription;
