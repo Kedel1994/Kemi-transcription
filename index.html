@@ -266,8 +266,21 @@ h1,h2,h3{font-family:'Space Grotesk',sans-serif;}
         <div class="url-input-row">
           <input class="url-input" type="url" id="driveUrl" placeholder="https://drive.google.com/file/d/..." oninput="previewUrl('drive')">
         </div>
+        <div class="url-label" style="margin-top:12px;">Type de fichier</div>
+        <select class="select" id="driveFileType" style="margin-bottom:8px;">
+          <option value="audio/mp3">🎵 Audio MP3</option>
+          <option value="audio/wav">🎵 Audio WAV</option>
+          <option value="audio/mp4">🎵 Audio M4A</option>
+          <option value="audio/ogg">🎵 Audio OGG</option>
+          <option value="audio/flac">🎵 Audio FLAC</option>
+          <option value="audio/webm">🎵 Audio WEBM</option>
+          <option value="video/mp4">🎬 Vidéo MP4</option>
+          <option value="video/quicktime">🎬 Vidéo MOV</option>
+          <option value="video/webm">🎬 Vidéo WEBM</option>
+          <option value="application/pdf">📄 PDF</option>
+        </select>
         <div class="url-hint">
-          Upload ton fichier sur Google Drive → Clic droit → <strong>"Obtenir le lien"</strong> → <strong>"Tout le monde peut voir"</strong> → Copie le lien.
+          Google Drive → Clic droit sur le fichier → <strong>"Obtenir le lien"</strong> → <strong>"Tout le monde peut voir"</strong> → Copie le lien. Fonctionne pour les audios de 4h+.
         </div>
         <div class="url-preview" id="preview-drive"></div>
       </div>
@@ -645,76 +658,50 @@ async function callGeminiWithUrl(url, type, agentConfig, srcLang, tgtLang){
   var parts = [];
 
   if(type==='youtube'){
-    // Gemini supports YouTube URLs natively via video_metadata
-    addLog('▶️ Lien YouTube envoyé à Gemini...','info');
-    parts.push({
-      fileData:{
-        mimeType:'video/*',
-        fileUri: url
-      }
-    });
-    parts.push({text: prompt});
+    // Gemini supporte les URLs YouTube nativement via fileData.fileUri
+    addLog('▶️ Lien YouTube envoyé directement à Gemini...','info');
+    setProgress(30,'Envoi du lien YouTube à Gemini...');
+    parts.push({ fileData:{ fileUri: url } });
+    parts.push({ text: prompt });
     return await callGeminiAPI(parts);
 
   } else {
-    // Google Drive — download the file then send as base64
+    // Google Drive — Gemini peut accéder directement aux liens Drive publics
     var fileId = extractDriveFileId(url);
     if(!fileId) throw new Error('ID du fichier Drive introuvable dans le lien');
 
-    addLog('📥 Téléchargement depuis Google Drive...','info');
+    // Construire l'URI direct de téléchargement Google Drive
+    var driveUri = 'https://drive.google.com/uc?export=download&id='+fileId;
+    addLog('📁 Lien Drive envoyé directement à Gemini...','info');
     addLog('🆔 File ID: '+fileId,'info');
-    setProgress(25,'Téléchargement du fichier Drive...');
+    setProgress(30,'Envoi du lien Drive à Gemini...');
 
-    // Use Google Drive export/download URL
-    var downloadUrl = 'https://drive.google.com/uc?export=download&id='+fileId;
+    // Utiliser le type sélectionné par l'utilisateur ou détecter depuis URL
+    var driveTypeSel = document.getElementById('driveFileType');
+    var mime = (driveTypeSel && driveTypeSel.value) ? driveTypeSel.value : detectMimeFromUrl(url);
+    addLog('📄 Type MIME: '+mime,'info');
 
-    var response;
-    try{
-      response = await fetch(downloadUrl, {method:'GET'});
-    } catch(e){
-      throw new Error('Impossible de télécharger depuis Drive — vérifie que le fichier est partagé en "Tout le monde peut voir"');
-    }
-
-    if(!response.ok) throw new Error('Téléchargement Drive échoué ('+response.status+') — vérifie les permissions de partage');
-
-    // Check content type
-    var contentType = response.headers.get('content-type')||'application/octet-stream';
-    addLog('📄 Type détecté: '+contentType,'info');
-
-    // Check file size before reading
-    var contentLength = response.headers.get('content-length');
-    if(contentLength){
-      var sizeMB = (parseInt(contentLength)/1024/1024).toFixed(1);
-      addLog('📦 Taille: '+sizeMB+' MB','info');
-      if(parseInt(contentLength) > 50*1024*1024){
-        throw new Error('Fichier trop volumineux pour Drive direct ('+sizeMB+' MB). Utilise YouTube à la place pour les vidéos > 50 MB.');
-      }
-    }
-
-    setProgress(45,'Conversion du fichier...');
-    addLog('🔄 Conversion en base64...','info');
-
-    var blob = await response.blob();
-    var mime = blob.type || contentType;
-
-    // Convert blob to base64
-    var base64 = await new Promise(function(resolve, reject){
-      var reader = new FileReader();
-      reader.onload = function(e){
-        var result = e.target.result;
-        resolve(result.includes('base64,') ? result.split('base64,')[1] : result);
-      };
-      reader.onerror = function(){ reject(new Error('Erreur conversion base64')); };
-      reader.readAsDataURL(blob);
-    });
-
-    addLog('✓ Fichier converti — envoi à Gemini...','ok');
-    setProgress(55,'Envoi à Gemini...');
-
-    parts.push({inlineData:{mimeType:mime, data:base64}});
-    parts.push({text:prompt});
+    parts.push({ fileData:{ mimeType: mime, fileUri: driveUri } });
+    parts.push({ text: prompt });
     return await callGeminiAPI(parts);
   }
+}
+
+// ===== DETECT MIME TYPE FROM URL =====
+function detectMimeFromUrl(url){
+  var lower = url.toLowerCase();
+  if(lower.includes('.mp3')) return 'audio/mp3';
+  if(lower.includes('.mp4')) return 'video/mp4';
+  if(lower.includes('.wav')) return 'audio/wav';
+  if(lower.includes('.ogg')) return 'audio/ogg';
+  if(lower.includes('.m4a')) return 'audio/mp4';
+  if(lower.includes('.webm')) return 'audio/webm';
+  if(lower.includes('.flac')) return 'audio/flac';
+  if(lower.includes('.mov')) return 'video/quicktime';
+  if(lower.includes('.avi')) return 'video/avi';
+  if(lower.includes('.pdf')) return 'application/pdf';
+  // Par défaut audio — le plus courant pour les cours
+  return 'audio/mp3';
 }
 
 // ===== CALL GEMINI WITH FILE (base64) =====
