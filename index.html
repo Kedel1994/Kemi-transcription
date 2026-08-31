@@ -682,43 +682,63 @@ async function callGeminiWithText(text, agentConfig, srcLang, tgtLang){
   return await callGeminiAPI([{text:prompt}]);
 }
 
-// ===== CALL GEMINI API =====
-async function callGeminiAPI(parts){
-  addLog('🧠 '+MODEL_ANALYZE+' en cours d\'analyse...','info');
-  setProgress(60,'Analyse en cours...');
+// ===== CALL GEMINI API (with automatic fallback) =====
+var FALLBACK_MODELS = ['gemini-3.7-flash','gemini-3.6-flash','gemini-2.5-flash','gemini-2.5-pro'];
 
+async function callGeminiAPI(parts){
+  var lastError = null;
+  for(var i=0; i<FALLBACK_MODELS.length; i++){
+    var model = FALLBACK_MODELS[i];
+    if(stopFlag) throw new Error('Arrêté par l\'utilisateur');
+    addLog('🧠 Essai avec '+model+'...','info');
+    setProgress(60+i*5,'Analyse avec '+model+'...');
+    try{
+      var result = await callGeminiModel(model, parts);
+      addLog('✓ Succès avec '+model,'ok');
+      return result;
+    } catch(err){
+      var msg = err.message||'';
+      var isOverloaded = msg.toLowerCase().includes('high demand')||msg.toLowerCase().includes('overloaded')||msg.toLowerCase().includes('quota')||msg.toLowerCase().includes('429')||msg.toLowerCase().includes('503');
+      var isUnavailable = msg.toLowerCase().includes('no longer available')||msg.toLowerCase().includes('not found')||msg.toLowerCase().includes('404');
+      if(isOverloaded||isUnavailable){
+        addLog('⚠ '+model+' surchargé — essai suivant...','warn');
+        lastError = err;
+        if(i < FALLBACK_MODELS.length-1) await sleep(1500);
+        continue;
+      }
+      throw err; // other errors — don't retry
+    }
+  }
+  throw new Error('Tous les modèles sont surchargés. Réessaie dans quelques minutes.\n'+( lastError?lastError.message:''));
+}
+
+async function callGeminiModel(model, parts){
   var body = {
     contents:[{role:'user', parts:parts}],
     generationConfig:{responseMimeType:'application/json'}
   };
-
-  var resp = await fetch(GENERATE_API_BASE+MODEL_ANALYZE+':generateContent?key='+apiKey, {
+  var resp = await fetch(GENERATE_API_BASE+model+':generateContent?key='+apiKey, {
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify(body)
   });
-
   if(!resp.ok){
     var e = await resp.json().catch(function(){ return {}; });
-    throw new Error((e.error&&e.error.message)||'Erreur Gemini '+resp.status);
+    throw new Error((e.error&&e.error.message)||'Erreur '+resp.status);
   }
-
   var data = await resp.json();
   var text = '';
   if(data.candidates&&data.candidates[0]&&data.candidates[0].content&&data.candidates[0].content.parts){
     text = data.candidates[0].content.parts[0].text||'';
   }
-
   setProgress(90,'Traitement de la réponse...');
-  addLog('📥 Réponse reçue, traitement...','info');
-
+  addLog('📥 Réponse reçue — traitement...','info');
   var clean = text.replace(/```json/g,'').replace(/```/g,'').trim();
-  try{
-    return JSON.parse(clean);
-  } catch(e){
-    throw new Error('Réponse Gemini invalide — réessaie');
-  }
+  try{ return JSON.parse(clean); }
+  catch(e){ throw new Error('Réponse invalide de '+model+' — réessaie'); }
 }
+
+function sleep(ms){ return new Promise(function(r){ setTimeout(r,ms); }); }
 
 // ===== READ FILE AS BASE64 =====
 function readFileAsBase64(file){
