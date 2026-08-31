@@ -596,23 +596,19 @@ async function processMedia(){
 
     } else if(currentSource==='drive'){
       addLog('📁 Traitement fichier Google Drive...','info');
-      setProgress(20,'Conversion du lien Drive...');
-      // Convert Drive share link to direct link
-      var directUrl = convertDriveUrl(driveUrl);
-      addLog('🔗 URL Drive convertie','ok');
-      setProgress(35,'Envoi à Gemini 2.5 Pro...');
-      result = await callGeminiWithUrl(directUrl, 'drive', agentConfig, srcLang, tgtLang);
+      setProgress(15,'Préparation du téléchargement...');
+      result = await callGeminiWithUrl(driveUrl, 'drive', agentConfig, srcLang, tgtLang);
 
     } else if(currentSource==='file'){
-      addLog('📄 Lecture du fichier...','info');
-      setProgress(15,'Lecture du fichier local...');
+      addLog('📄 Lecture du fichier local...','info');
+      setProgress(15,'Lecture du fichier...');
       var fileContent = await readFileAsBase64(selectedFile);
-      setProgress(35,'Envoi à Gemini 2.5 Pro...');
+      setProgress(40,'Envoi à Gemini...');
       result = await callGeminiWithFile(fileContent, selectedFile.type, agentConfig, srcLang, tgtLang, rawText);
 
     } else {
       addLog('✏️ Traitement du texte...','info');
-      setProgress(20,'Envoi à Gemini 2.5 Pro...');
+      setProgress(20,'Envoi à Gemini...');
       result = await callGeminiWithText(rawText, agentConfig, srcLang, tgtLang);
     }
 
@@ -634,16 +630,13 @@ async function processMedia(){
   }
 }
 
-// ===== CONVERT DRIVE URL =====
-function convertDriveUrl(url){
-  // https://drive.google.com/file/d/FILE_ID/view?usp=sharing
-  // -> use as-is, Gemini handles Drive URLs directly
+// ===== EXTRACT DRIVE FILE ID =====
+function extractDriveFileId(url){
   var match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
-  if(match){
-    return 'https://drive.google.com/file/d/'+match[1]+'/view';
-  }
-  // Already direct or other format
-  return url;
+  if(match) return match[1];
+  var match2 = url.match(/id=([a-zA-Z0-9_-]+)/);
+  if(match2) return match2[1];
+  return null;
 }
 
 // ===== CALL GEMINI WITH URL (YouTube or Drive) =====
@@ -652,15 +645,76 @@ async function callGeminiWithUrl(url, type, agentConfig, srcLang, tgtLang){
   var parts = [];
 
   if(type==='youtube'){
-    // Gemini supports YouTube URLs natively
-    parts.push({text: 'Analyse cette vidéo YouTube : '+url});
-  } else {
-    // For Drive, include URL as context
-    parts.push({text: 'Analyse ce fichier accessible via ce lien Google Drive : '+url+'\n\nSi tu ne peux pas accéder directement au fichier, dis-le dans le champ "transcription" du JSON.'});
-  }
-  parts.push({text: prompt});
+    // Gemini supports YouTube URLs natively via video_metadata
+    addLog('▶️ Lien YouTube envoyé à Gemini...','info');
+    parts.push({
+      fileData:{
+        mimeType:'video/*',
+        fileUri: url
+      }
+    });
+    parts.push({text: prompt});
+    return await callGeminiAPI(parts);
 
-  return await callGeminiAPI(parts);
+  } else {
+    // Google Drive — download the file then send as base64
+    var fileId = extractDriveFileId(url);
+    if(!fileId) throw new Error('ID du fichier Drive introuvable dans le lien');
+
+    addLog('📥 Téléchargement depuis Google Drive...','info');
+    addLog('🆔 File ID: '+fileId,'info');
+    setProgress(25,'Téléchargement du fichier Drive...');
+
+    // Use Google Drive export/download URL
+    var downloadUrl = 'https://drive.google.com/uc?export=download&id='+fileId;
+
+    var response;
+    try{
+      response = await fetch(downloadUrl, {method:'GET'});
+    } catch(e){
+      throw new Error('Impossible de télécharger depuis Drive — vérifie que le fichier est partagé en "Tout le monde peut voir"');
+    }
+
+    if(!response.ok) throw new Error('Téléchargement Drive échoué ('+response.status+') — vérifie les permissions de partage');
+
+    // Check content type
+    var contentType = response.headers.get('content-type')||'application/octet-stream';
+    addLog('📄 Type détecté: '+contentType,'info');
+
+    // Check file size before reading
+    var contentLength = response.headers.get('content-length');
+    if(contentLength){
+      var sizeMB = (parseInt(contentLength)/1024/1024).toFixed(1);
+      addLog('📦 Taille: '+sizeMB+' MB','info');
+      if(parseInt(contentLength) > 50*1024*1024){
+        throw new Error('Fichier trop volumineux pour Drive direct ('+sizeMB+' MB). Utilise YouTube à la place pour les vidéos > 50 MB.');
+      }
+    }
+
+    setProgress(45,'Conversion du fichier...');
+    addLog('🔄 Conversion en base64...','info');
+
+    var blob = await response.blob();
+    var mime = blob.type || contentType;
+
+    // Convert blob to base64
+    var base64 = await new Promise(function(resolve, reject){
+      var reader = new FileReader();
+      reader.onload = function(e){
+        var result = e.target.result;
+        resolve(result.includes('base64,') ? result.split('base64,')[1] : result);
+      };
+      reader.onerror = function(){ reject(new Error('Erreur conversion base64')); };
+      reader.readAsDataURL(blob);
+    });
+
+    addLog('✓ Fichier converti — envoi à Gemini...','ok');
+    setProgress(55,'Envoi à Gemini...');
+
+    parts.push({inlineData:{mimeType:mime, data:base64}});
+    parts.push({text:prompt});
+    return await callGeminiAPI(parts);
+  }
 }
 
 // ===== CALL GEMINI WITH FILE (base64) =====
