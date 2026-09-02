@@ -598,43 +598,20 @@ async function sendChat(){
   showTyping();
 
   try{
-    // Build system context
     var agentCfg = getAgentConfig();
-    var memCtx = chatMemory.length > 0
-      ? '\n\nINFOS MÉMORISÉES SUR L'UTILISATEUR:\n'+chatMemory.map(function(m,i){ return (i+1)+'. '+m.text; }).join('\n')
-      : '';
+    var memLines = chatMemory.map(function(m,i){ return (i+1)+'. '+m.text; }).join('\n');
+    var memCtx = chatMemory.length > 0 ? "\n\nINFOS MEMORISEES:\n" + memLines : '';
     var lastTranscript = '';
     var items = JSON.parse(localStorage.getItem('kemi_items_v1')||'[]');
     if(items.length > 0 && items[0].transcription){
-      lastTranscript = '\n\nDERNIÈRE TRANSCRIPTION (extrait):\n'+items[0].transcription.substring(0,800)+'...';
+      lastTranscript = "\n\nDERNIERE TRANSCRIPTION (extrait):\n" + items[0].transcription.substring(0,600);
     }
-    var sysPrompt = 'Tu es Kemi, un assistant IA personnel pour '+agentCfg.userName+' ('+agentCfg.userRole+').'+
-      ' Tu es intégré dans l'application Kemi Transcription.'+
-      ' Tu es intelligent, direct, chaleureux et utile.'+
-      ' Tu réponds en français par défaut sauf si l'utilisateur écrit dans une autre langue.'+
-      ' Tu mémorises les informations importantes et tu t'en souviens.'+
-      ' Quand l'utilisateur te demande de mémoriser quelque chose, réponds en confirmant et inclus exactement: [MEMO: <l'information>]'+
-      memCtx + lastTranscript;
+    var sysPrompt = "Tu es Kemi, assistant IA personnel pour " + agentCfg.userName + ". Tu reponds en francais. Tu memorises les infos importantes. Quand on te demande de memoriser, confirme et ecris [MEMO: l'info]." + memCtx + lastTranscript;
 
-    // Build messages with system context in first user message
-    var messages = [];
-    if(chatHistory.length === 1){
-      messages.push({
-        role:'user',
-        parts:[{text: '[CONTEXTE SYSTÈME: '+sysPrompt+']
-
-'+msg}]
-      });
-    } else {
-      // Include system in history
-      var histCopy = chatHistory.slice(0, -1);
-      histCopy[0] = {
-        role:'user',
-        parts:[{text:'[CONTEXTE SYSTÈME: '+sysPrompt+']
-
-'+chatHistory[0].parts[0].text}]
-      };
-      messages = histCopy.concat([{role:'user', parts:[{text:msg}]}]);
+    var firstMsg = chatHistory[0].parts[0].text;
+    var messages = [{role:'user', parts:[{text:'[SYSTEME: '+sysPrompt+']\n\n'+firstMsg}]}];
+    for(var i=1; i<chatHistory.length; i++){
+      messages.push(chatHistory[i]);
     }
 
     var body = {
@@ -642,56 +619,58 @@ async function sendChat(){
       generationConfig:{ maxOutputTokens:1024, temperature:0.7 }
     };
 
-    var resp = await fetch(GENERATE_API_BASE+CHAT_MODEL+':generateContent?key='+apiKey, {
+    var model = CHAT_MODEL;
+    var resp = await fetch(GENERATE_API_BASE + model + ':generateContent?key=' + apiKey, {
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify(body)
     });
 
     if(!resp.ok){
-      // Fallback to flash if lite unavailable
-      var resp2 = await fetch(GENERATE_API_BASE+'gemini-2.5-flash'+':generateContent?key='+apiKey, {
-        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+      model = 'gemini-2.5-flash';
+      resp = await fetch(GENERATE_API_BASE + model + ':generateContent?key=' + apiKey, {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body:JSON.stringify(body)
       });
-      if(!resp2.ok){ var e=await resp2.json().catch(function(){return{};}); throw new Error((e.error&&e.error.message)||'Erreur API'); }
-      resp = resp2;
+      if(!resp.ok){
+        var e = await resp.json().catch(function(){ return {}; });
+        throw new Error((e.error && e.error.message) || 'Erreur API ' + resp.status);
+      }
     }
 
     var data = await resp.json();
     var replyText = '';
-    if(data.candidates&&data.candidates[0]&&data.candidates[0].content&&data.candidates[0].content.parts){
-      replyText = data.candidates[0].content.parts[0].text||'';
+    if(data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts){
+      replyText = data.candidates[0].content.parts[0].text || '';
     }
-    if(!replyText) throw new Error('Réponse vide');
+    if(!replyText) throw new Error('Reponse vide du modele');
 
-    // Check for MEMO instruction
-    var memoMatch = replyText.match(/\[MEMO:\s*(.+?)\]/);
+    var memoMatch = replyText.match(new RegExp('\\[MEMO:\\s*(.+?)\\]','u'));
     if(memoMatch){
       var memoText = memoMatch[1].trim();
       chatMemory.push({id:'m'+Date.now(), text:memoText, date:new Date().toLocaleDateString('fr')});
       localStorage.setItem('kemi_chat_memory', JSON.stringify(chatMemory));
       updateMemoryBar();
-      replyText = replyText.replace(memoMatch[0],'').trim();
-      if(replyText) replyText += '\n\n_✓ Mémorisé : "'+memoText+'"_';
+      replyText = replyText.replace(memoMatch[0], '').trim();
+      replyText += '\n\n_Memorise : ' + memoText + '_';
     }
 
     chatHistory.push({role:'model', parts:[{text:replyText}]});
+    if(chatHistory.length > 40) chatHistory = chatHistory.slice(-40);
     hideTyping();
     appendChatMsg('assistant', replyText);
 
-    // Keep history to last 20 turns to save RAM
-    if(chatHistory.length > 40) chatHistory = chatHistory.slice(-40);
-
   } catch(err){
     hideTyping();
-    appendChatMsg('assistant','❌ Erreur : '+err.message);
+    appendChatMsg('assistant', 'Erreur : ' + (err.message||'Inconnue'));
     console.error(err);
   } finally {
     chatIsBusy = false;
     document.getElementById('chatSendBtn').disabled = false;
-    document.getElementById('chatInput').focus();
   }
 }
+
 
 function appendChatMsg(role, text){
   var msgs = document.getElementById('chatMessages');
