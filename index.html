@@ -931,6 +931,125 @@ function handleFileSelect(input){
 function doStop(){ stopFlag=true; showToast('Arrêt en cours...',''); }
 
 // ===== PROCESS =====
+
+// ===== ASSEMBLYAI TRANSCRIPTION =====
+async function transcribeWithAssemblyAI(fileUrl, srcLang, tgtLang, agentConfig){
+  addLog('AssemblyAI - transcription en cours...','info');
+  setProgress(20, 'Envoi a AssemblyAI...');
+  var langCode = (srcLang && srcLang !== 'Auto-Detection' && srcLang !== 'Auto-Détection') ? getLangCode(srcLang) : null;
+  var body = {
+    audio_url: fileUrl,
+    language_detection: !langCode,
+    speaker_labels: true,
+    auto_highlights: false,
+    summarization: false
+  };
+  if(langCode) body.language_code = langCode;
+  var submitResp = await fetch('https://api.assemblyai.com/v2/transcript', {
+    method: 'POST',
+    headers: {'Authorization': assemblyApiKey, 'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  if(!submitResp.ok){
+    var e = await submitResp.json().catch(function(){return{};});
+    throw new Error('AssemblyAI erreur soumission: '+(e.error||submitResp.status));
+  }
+  var job = await submitResp.json();
+  var jobId = job.id;
+  addLog('Job AssemblyAI cree: '+jobId,'ok');
+  setProgress(30, 'Transcription en cours - veuillez patienter...');
+  var maxTries = 180;
+  for(var i=0; i<maxTries; i++){
+    if(stopFlag) throw new Error('Arrete par utilisateur');
+    await sleep(3000);
+    var pollResp = await fetch('https://api.assemblyai.com/v2/transcript/'+jobId, {
+      headers:{'Authorization': assemblyApiKey}
+    });
+    var result = await pollResp.json();
+    var pct = Math.min(30 + i*0.3, 88);
+    setProgress(pct, 'AssemblyAI: '+result.status+' ('+Math.round(i*3)+'s)');
+    if(i % 5 === 0) addLog('Statut: '+result.status+' - '+Math.round(i*3)+'s ecoulees','info');
+    if(result.status === 'completed'){
+      setProgress(90, 'Formatage des resultats...');
+      addLog('Transcription AssemblyAI terminee!','ok');
+      return await formatAssemblyResult(result, tgtLang, agentConfig);
+    }
+    if(result.status === 'error'){
+      throw new Error('AssemblyAI erreur: '+result.error);
+    }
+  }
+  throw new Error('Timeout AssemblyAI apres 9 minutes');
+}
+
+async function formatAssemblyResult(result, tgtLang, agentConfig){
+  var transcription = result.text || '';
+  var segments = [];
+  if(result.utterances && result.utterances.length){
+    segments = result.utterances.map(function(u, i){
+      var startSec = Math.floor((u.start||0)/1000);
+      var mm = Math.floor(startSec/60), ss = startSec%60;
+      return {id:String(i+1), start:p2(mm)+':'+p2(ss), startSeconds:startSec, speaker:'Locuteur '+u.speaker, text:u.text, translation:''};
+    });
+  } else if(transcription) {
+    segments = [{id:'1', start:'00:00', startSeconds:0, speaker:'Locuteur', text:transcription, translation:''}];
+  }
+  var summary = '';
+  var keyPoints = [];
+  var translation = '';
+  if(currentMode !== 'transcribe' && transcription){
+    setProgress(92, 'Traduction avec Gemini...');
+    addLog('Traduction avec Gemini...','info');
+    try{
+      var tPrompt = 'Traduis ce texte en '+tgtLang+'. Reponds UNIQUEMENT avec la traduction:\n\n'+transcription.substring(0,8000);
+      var tBody = {contents:[{role:'user',parts:[{text:tPrompt}]}]};
+      for(var mi=0; mi<FALLBACK_MODELS.length; mi++){
+        var tResp = await fetch(GENERATE_API_BASE+FALLBACK_MODELS[mi]+':generateContent?key='+apiKey, {
+          method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(tBody)
+        });
+        if(tResp.ok){
+          var tData = await tResp.json();
+          if(tData.candidates && tData.candidates[0] && tData.candidates[0].content){
+            translation = tData.candidates[0].content.parts[0].text || '';
+            addLog('Traduction OK avec '+FALLBACK_MODELS[mi],'ok');
+            break;
+          }
+        }
+      }
+    } catch(e){ addLog('Traduction echouee: '+e.message,'warn'); }
+  }
+  if(transcription && !summary){
+    try{
+      setProgress(95, 'Resumé avec Gemini...');
+      var sPrompt = 'Fais un resume de 3-4 phrases de ce texte, puis liste 5 points cles. JSON uniquement: {"summary":"...","keyPoints":["...","...","...","...","..."]}\n\n'+transcription.substring(0,5000);
+      var sBody = {contents:[{role:'user',parts:[{text:sPrompt}]}], generationConfig:{responseMimeType:'application/json'}};
+      var sResp = await fetch(GENERATE_API_BASE+FALLBACK_MODELS[0]+':generateContent?key='+apiKey, {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(sBody)
+      });
+      if(sResp.ok){
+        var sData = await sResp.json();
+        var sText = sData.candidates&&sData.candidates[0]&&sData.candidates[0].content ? sData.candidates[0].content.parts[0].text : '';
+        var sParsed = JSON.parse(sText.replace(/```json|```/g,'').trim());
+        summary = sParsed.summary || '';
+        keyPoints = sParsed.keyPoints || [];
+      }
+    } catch(e){ addLog('Resume echoue (non critique)','warn'); }
+  }
+  return {
+    detectedLanguage: result.language_code || 'Detecte automatiquement',
+    transcription: transcription,
+    translation: translation,
+    summary: summary,
+    keyPoints: keyPoints,
+    vocabulary: [],
+    segments: segments
+  };
+}
+
+function getLangCode(langName){
+  var map = {'Francais':'fr','Français':'fr','Anglais':'en','Espagnol':'es','Portugais':'pt','Arabe':'ar','Allemand':'de','Italien':'it','Creole Haitien':'fr','Créole Haïtien':'fr'};
+  return map[langName] || null;
+}
+
 async function processMedia(){
   if(!apiKey){ showApiModal(); return; }
 
