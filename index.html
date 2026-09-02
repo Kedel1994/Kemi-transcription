@@ -1084,11 +1084,14 @@ async function processMedia(){
       addLog('📁 Traitement fichier Google Drive...','info');
       setProgress(15,'Préparation...');
       var fileId = extractDriveFileId(driveUrl);
-      var driveDirectUrl = fileId ? 'https://drive.google.com/uc?export=download&id='+fileId : driveUrl;
       var driveMime = document.getElementById('driveFileType') ? document.getElementById('driveFileType').value : 'audio/mp3';
       var isAudioVideo = driveMime.startsWith('audio') || driveMime.startsWith('video');
-      if(assemblyApiKey && isAudioVideo){
-        addLog('🎯 AssemblyAI détecté — transcription fiable activée','ok');
+      if(assemblyApiKey && isAudioVideo && fileId){
+        // AssemblyAI needs a direct public URL
+        // Use the Open/Uc download URL with confirm bypass for large files
+        var driveDirectUrl = 'https://drive.usercontent.google.com/download?id='+fileId+'&export=download&confirm=t';
+        addLog('🎯 AssemblyAI actif — URL directe Drive generee','ok');
+        addLog('URL: '+driveDirectUrl.substring(0,60)+'...','info');
         result = await transcribeWithAssemblyAI(driveDirectUrl, srcLang, tgtLang, agentConfig);
       } else {
         result = await callGeminiWithUrl(driveUrl, 'drive', agentConfig, srcLang, tgtLang);
