@@ -207,8 +207,13 @@ h1,h2,h3{font-family:'Space Grotesk',sans-serif;}
     <h2>🔑 Clé API Gemini</h2>
     <p>Entre ta clé API Google AI Studio. Elle sera stockée uniquement sur cet appareil.</p>
     <div class="form-group">
-      <label class="form-label">Clé API</label>
+      <label class="form-label">Clé API Gemini (Chat + Analyse)</label>
       <input class="input" type="password" id="apiKeyInput" placeholder="AQ.Ab8RN6... ou AIza...">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Clé API AssemblyAI (Transcription audio/vidéo)</label>
+      <input class="input" type="password" id="assemblyKeyInput" placeholder="Optionnel — pour transcription fiable">
+      <div style="font-size:11px;color:var(--muted);margin-top:4px;">Gratuit sur assemblyai.com — $50 de crédits sans carte de crédit</div>
     </div>
     <button class="btn btn-primary" onclick="saveApiKey()">Activer Kemi ✦</button>
   </div>
@@ -225,6 +230,7 @@ h1,h2,h3{font-family:'Space Grotesk',sans-serif;}
   </div>
   <div class="header-right">
     <span class="badge-api" id="apiBadge">Non configuré</span>
+    <span class="badge-api" id="aaiBadge" style="display:none;">AAI ✓</span>
     <button class="btn btn-sm" onclick="showApiModal()" style="font-size:11px;padding:4px 10px;">🔑</button>
   </div>
 </div>
@@ -549,6 +555,7 @@ h1,h2,h3{font-family:'Space Grotesk',sans-serif;}
 <script>
 // ===== STATE =====
 var apiKey = localStorage.getItem('kemi_api_key') || '';
+var assemblyApiKey = localStorage.getItem('kemi_assembly_key') || '';
 var currentMode = 'transcribe';
 var currentSource = 'youtube';
 var selectedFile = null;
@@ -831,6 +838,7 @@ function init(){
   loadAgentConfig();
   updateTargetVisibility();
   initChat();
+  if(document.getElementById("assemblyKeyInput") && assemblyApiKey) document.getElementById("assemblyKeyInput").value = assemblyApiKey;
 }
 
 // ===== API KEY =====
@@ -838,16 +846,24 @@ function showApiModal(){ document.getElementById('apiModal').classList.remove('h
 function hideApiModal(){ document.getElementById('apiModal').classList.add('hidden'); }
 function saveApiKey(){
   var val = document.getElementById('apiKeyInput').value.trim();
-  if(!val){ showToast('Entre une clé valide','error'); return; }
+  if(!val){ showToast('Entre une clé Gemini valide','error'); return; }
   apiKey = val;
   localStorage.setItem('kemi_api_key', val);
+  var aaiVal = document.getElementById('assemblyKeyInput').value.trim();
+  if(aaiVal){
+    assemblyApiKey = aaiVal;
+    localStorage.setItem('kemi_assembly_key', aaiVal);
+  }
   updateApiStatus(); hideApiModal();
-  showToast('Clé API enregistrée ✓','success');
+  showToast('Clés API enregistrées ✓','success');
 }
 function updateApiStatus(){
   var b = document.getElementById('apiBadge');
-  if(apiKey){ b.textContent='API ✓'; b.className='badge-api ok'; }
+  if(apiKey){ b.textContent='Gemini ✓'; b.className='badge-api ok'; }
   else{ b.textContent='Non configuré'; b.className='badge-api no'; }
+  var ab = document.getElementById('aaiBadge');
+  if(assemblyApiKey){ ab.style.display='inline-block'; ab.textContent='AAI ✓'; ab.className='badge-api ok'; }
+  else{ ab.style.display='none'; }
 }
 
 // ===== TABS =====
@@ -947,8 +963,17 @@ async function processMedia(){
 
     } else if(currentSource==='drive'){
       addLog('📁 Traitement fichier Google Drive...','info');
-      setProgress(15,'Préparation du téléchargement...');
-      result = await callGeminiWithUrl(driveUrl, 'drive', agentConfig, srcLang, tgtLang);
+      setProgress(15,'Préparation...');
+      var fileId = extractDriveFileId(driveUrl);
+      var driveDirectUrl = fileId ? 'https://drive.google.com/uc?export=download&id='+fileId : driveUrl;
+      var driveMime = document.getElementById('driveFileType') ? document.getElementById('driveFileType').value : 'audio/mp3';
+      var isAudioVideo = driveMime.startsWith('audio') || driveMime.startsWith('video');
+      if(assemblyApiKey && isAudioVideo){
+        addLog('🎯 AssemblyAI détecté — transcription fiable activée','ok');
+        result = await transcribeWithAssemblyAI(driveDirectUrl, srcLang, tgtLang, agentConfig);
+      } else {
+        result = await callGeminiWithUrl(driveUrl, 'drive', agentConfig, srcLang, tgtLang);
+      }
 
     } else if(currentSource==='file'){
       addLog('📄 Lecture du fichier local...','info');
