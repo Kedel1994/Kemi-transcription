@@ -518,8 +518,16 @@ h1,h2,h3{font-family:'Space Grotesk',sans-serif;}
       </div>
     </div>
     <div class="chat-input-area">
+      <label class="chat-file-btn" title="Joindre un fichier" style="width:44px;height:44px;border-radius:var(--radius-sm);background:var(--surface2);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:18px;flex-shrink:0;">
+        📎<input type="file" id="chatFileInput" style="display:none;" accept="image/*,audio/*,video/*,.pdf,.txt,.doc,.docx" onchange="handleChatFile(this)">
+      </label>
       <textarea class="chat-input" id="chatInput" placeholder="Écris ton message..." rows="1" onkeydown="chatKeyDown(event)" oninput="autoResize(this)"></textarea>
       <button class="chat-send-btn" id="chatSendBtn" onclick="sendChat()">➤</button>
+    </div>
+    <div id="chatFilePreview" style="display:none;margin-top:8px;padding:8px 12px;background:var(--accent-glow);border:1px solid rgba(124,106,255,0.3);border-radius:var(--radius-sm);font-size:12px;color:var(--accent2);display:flex;align-items:center;gap:8px;">
+      <span id="chatFileIcon">📎</span>
+      <span id="chatFileName" style="flex:1;"></span>
+      <button onclick="removeChatFile()" style="background:none;border:none;color:var(--danger);cursor:pointer;font-size:14px;">✕</button>
     </div>
   </div>
 
@@ -557,7 +565,7 @@ var GENERATE_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models
 
 
 // ===== CHAT =====
-var CHAT_MODEL = 'gemini-3.6-flash';
+var CHAT_MODEL = 'gemini-3.7-flash';
 var chatHistory = [];
 var chatMemory = JSON.parse(localStorage.getItem('kemi_chat_memory')||'[]');
 var chatIsBusy = false;
@@ -579,6 +587,44 @@ function autoResize(el){
 
 function chatKeyDown(e){
   if(e.key==='Enter' && !e.shiftKey){ e.preventDefault(); sendChat(); }
+}
+
+
+// ===== CHAT FILE ATTACHMENT =====
+var chatAttachedFile = null;
+var chatAttachedBase64 = null;
+var chatAttachedMime = null;
+
+function handleChatFile(input){
+  var file = input.files[0];
+  if(!file) return;
+  var sizeMB = (file.size/1024/1024).toFixed(1);
+  if(file.size > 20*1024*1024){
+    showToast('Fichier trop grand pour le chat (max 20 MB)','error');
+    input.value=''; return;
+  }
+  chatAttachedFile = file;
+  chatAttachedMime = file.type;
+  var icons = {'image':'🖼','audio':'🎵','video':'🎬','application/pdf':'📄','text':'📝'};
+  var icon = '📎';
+  for(var k in icons){ if(file.type.startsWith(k)||file.type===k){ icon=icons[k]; break; } }
+  document.getElementById('chatFileIcon').textContent = icon;
+  document.getElementById('chatFileName').textContent = file.name+' ('+sizeMB+' MB)';
+  var preview = document.getElementById('chatFilePreview');
+  preview.style.display = 'flex';
+  var reader = new FileReader();
+  reader.onload = function(e){
+    chatAttachedBase64 = e.target.result.split('base64,')[1];
+  };
+  reader.readAsDataURL(file);
+}
+
+function removeChatFile(){
+  chatAttachedFile = null;
+  chatAttachedBase64 = null;
+  chatAttachedMime = null;
+  document.getElementById('chatFilePreview').style.display = 'none';
+  document.getElementById('chatFileInput').value = '';
 }
 
 async function sendChat(){
@@ -614,9 +660,16 @@ async function sendChat(){
       messages.push(chatHistory[i]);
     }
 
+    // Attach file to last message if present
+    if(chatAttachedBase64 && chatAttachedMime){
+      var lastParts = [{inlineData:{mimeType:chatAttachedMime, data:chatAttachedBase64}},{text:msg}];
+      messages[messages.length-1] = {role:'user', parts:lastParts};
+      appendFileIndicator(chatAttachedFile.name);
+    }
+
     var body = {
       contents: messages,
-      generationConfig:{ maxOutputTokens:1024, temperature:0.7 }
+      generationConfig:{ maxOutputTokens:2048, temperature:0.7 }
     };
 
     var model = CHAT_MODEL;
@@ -627,7 +680,7 @@ async function sendChat(){
     });
 
     if(!resp.ok){
-      model = 'gemini-3.7-flash';
+      model = 'gemini-3.6-flash';
       resp = await fetch(GENERATE_API_BASE + model + ':generateContent?key=' + apiKey, {
         method:'POST',
         headers:{'Content-Type':'application/json'},
@@ -657,6 +710,7 @@ async function sendChat(){
     }
 
     chatHistory.push({role:'model', parts:[{text:replyText}]});
+    removeChatFile();
     if(chatHistory.length > 40) chatHistory = chatHistory.slice(-40);
     hideTyping();
     appendChatMsg('assistant', replyText);
@@ -671,6 +725,17 @@ async function sendChat(){
   }
 }
 
+
+function appendFileIndicator(fname){
+  var msgs = document.getElementById('chatMessages');
+  var last = msgs.lastElementChild;
+  if(last){
+    var indicator = document.createElement('div');
+    indicator.style.cssText = 'font-size:11px;color:var(--accent2);margin-top:4px;text-align:right;';
+    indicator.textContent = '📎 '+fname;
+    last.appendChild(indicator);
+  }
+}
 
 function appendChatMsg(role, text){
   var msgs = document.getElementById('chatMessages');
